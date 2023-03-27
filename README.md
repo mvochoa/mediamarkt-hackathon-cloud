@@ -97,7 +97,7 @@ Do you want to perform these actions?
 
 ...
 
-Apply complete! Resources: 7 added, 0 changed, 0 destroyed.
+Apply complete! Resources: 8 added, 0 changed, 0 destroyed.
 
 Outputs:
 
@@ -106,17 +106,18 @@ service = "http://130.211.57.127"
 
 Los recursos que se crearon son:
 
-| Nombre                                                                                                                                                              | Tipo        | Descripción                                                                                                                            |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| [google_artifact_registry_repository.mediamarkt-cloud](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/artifact_registry_repository) | resource    | Repositorio donde se van almacenar las imágenes de docker construidas por el cloud build                                               |
-| [google_cloudbuild_trigger.mms-cloud-skeleton](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/cloudbuild_trigger)                   | resource    | El Cloud Build que se ejecuta cada vez que se hace push en la rama `main` del repositorio                                              |
-| [google_container_cluster.mediamarkt-cloud](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/container_cluster)                       | resource    |                                                                                                                                        |
-| [google_container_node_pool.mediamarkt-cloud](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/container_node_pool)                   | resource    |                                                                                                                                        |
-| [kubernetes_config_map_v1.script](https://registry.terraform.io/providers/hashicorp/kubernetes/latest/docs/resources/config_map_v1)                                 | resource    | Manifiesto de kubernetes que contiene el script para forzar el cambio de la imagen cuando se sube una nueva al artifact registry       |
-| [kubernetes_deployment_v1.mms-cloud-skeleton](https://registry.terraform.io/providers/hashicorp/kubernetes/latest/docs/resources/deployment_v1)                     | resource    | Manifiesto de Kubernetes para el deploy de la aplicación solo va generar un 1 pod                                                      |
-| [kubernetes_service_v1.mms-cloud-skeleton](https://registry.terraform.io/providers/hashicorp/kubernetes/latest/docs/resources/service_v1)                           | resource    | Manifiesto de Kubernetes para el servicio que va generar un Load Balancer con una IP Publica para que se puede acceder a la aplicación |
-| [google_client_config.default](https://registry.terraform.io/providers/hashicorp/google/latest/docs/data-sources/client_config)                                     | data source |                                                                                                                                        |
-| [google_project.project](https://registry.terraform.io/providers/hashicorp/google/latest/docs/data-sources/project)                                                 | data source |                                                                                                                                        |
+| Nombre                                                                                                                                                              | Tipo        | Descripción                                                                                                                                             |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [google_artifact_registry_repository.mediamarkt-cloud](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/artifact_registry_repository) | resource    | Repositorio donde se van almacenar las imágenes de docker construidas por el cloud build                                                                |
+| [google_cloudbuild_trigger.mms-cloud-skeleton](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/cloudbuild_trigger)                   | resource    | El Cloud Build que se ejecuta cada vez que se hace push en la rama `main` del repositorio                                                               |
+| [google_container_cluster.mediamarkt-cloud](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/container_cluster)                       | resource    |                                                                                                                                                         |
+| [google_container_node_pool.mediamarkt-cloud](https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/container_node_pool)                   | resource    |                                                                                                                                                         |
+| [kubernetes_config_map_v1.continuous-delivery](https://registry.terraform.io/providers/hashicorp/kubernetes/latest/docs/resources/config_map_v1)                    | resource    | Manifiesto de kubernetes que contiene el script para hacer el cambio de la imagen en el deployment cuando se sube una nueva imagen al artifact registry |
+| [kubernetes_cron_job_v1.continuous-delivery](https://registry.terraform.io/providers/hashicorp/kubernetes/latest/docs/resources/cron_job_v1)                        | resource    | Manifiesto de Kubernetes que crea un pod cada 5 minutos para validar si existe una nueva imagen y cambiar la imagen en el deployment                    |
+| [kubernetes_deployment_v1.mms-cloud-skeleton](https://registry.terraform.io/providers/hashicorp/kubernetes/latest/docs/resources/deployment_v1)                     | resource    | Manifiesto de Kubernetes para el deploy de la aplicación solo generara 2 pods                                                                           |
+| [kubernetes_service_v1.mms-cloud-skeleton](https://registry.terraform.io/providers/hashicorp/kubernetes/latest/docs/resources/service_v1)                           | resource    | Manifiesto de Kubernetes para el servicio que va generar un Load Balancer con una IP Publica para que se puede acceder a la aplicación                  |
+| [google_client_config.default](https://registry.terraform.io/providers/hashicorp/google/latest/docs/data-sources/client_config)                                     | data source |                                                                                                                                                         |
+| [google_project.project](https://registry.terraform.io/providers/hashicorp/google/latest/docs/data-sources/project)                                                 | data source |                                                                                                                                                         |
 
 ### (IMPORTANTE) Problema con permisos en Google Cloud
 
@@ -161,36 +162,13 @@ $ kubectl set image deployment/mms-cloud-skeleton mms-cloud-skeleton=europe-west
 
 #### Solución por la falta de permisos
 
-Esta solución la encontré al revisar la cuenta de servicio de los nodes de kubernetes, encontre que cuentas con el permiso para acceder al cluster, por lo que internamente en el cluster se pueden ejecutar los comandos que no se pueden ejecutar en el cloud build por falta de permisos.
+Esta solución la encontré al revisar la cuenta de servicio de los nodes de kubernetes, encontré que tiene el permiso para acceder al cluster, por lo que internamente en el cluster se pueden ejecutar los comandos que no se pueden ejecutar en el cloud build por falta de permisos.
 
-La solución consistió en agregar un contenedor al deployment de kubernetes de la aplicación, el cual se encarga de revisar regularmente (cada 5 min) si se subió una nueva imagen al artifact registry y cuando detecte una nueva imagen actualiza el deployment con esa nueva imagen. El script que ejecuta el contenedor es el siguiente:
+La solución consistió en crear un cronjob en kubernetes que revise cada 5 minutos, si se subió una nueva imagen al artifact registry y cuando detecte una nueva imagen actualiza el deployment con esa nueva imagen. El script y los manifiestos de kubernetes están en [`src/continuous_delivery.kube.tf`](./src/continuous_delivery.kube.tf)
 
-```sh
-#!/bin/bash
+Aplicando esta solución el diagrama de CI/CD queda de esta manera:
 
-function GetTag() {
-  TAG=$(gcloud artifacts docker images list --include-tags europe-west1-docker.pkg.dev/apmxlt6gss96qvmj7t3s7eexynz6ub/mediamarkt-cloud/mms-cloud-skeleton | grep latest | awk '{printf $3$4}')
-  TAG="${TAG/latest/}"
-  TAG="${TAG/,/}"
-  printf $TAG
-}
-
-gcloud container clusters get-credentials mediamarkt-cloud --region=europe-west1 --project=apmxlt6gss96qvmj7t3s7eexynz6ub
-
-IMAGE=$(kubectl get deployment mms-cloud-skeleton -o=jsonpath='{.spec.template.spec.containers[0].image}')
-
-while true
-do
-  TAG=$(GetTag)
-
-  if [[ "$IMAGE" != "europe-west1-docker.pkg.dev/apmxlt6gss96qvmj7t3s7eexynz6ub/mediamarkt-cloud/mms-cloud-skeleton:$TAG" ]];
-  then
-    kubectl set image deployment/mms-cloud-skeleton mms-cloud-skeleton=europe-west1-docker.pkg.dev/apmxlt6gss96qvmj7t3s7eexynz6ub/mediamarkt-cloud/mms-cloud-skeleton:$TAG
-  fi
-
-  sleep 300
-done
-```
+![](./.md/Diagram.jpeg)
 
 De esta manera el CI/CD esta completo 🎉🎉🎉. Se que no es una manera muy limpia de resolver el problema pero al no poder asignar los permisos de manera correcta, fue la única forma que encontré para que el CI/CD funcionara.
 
